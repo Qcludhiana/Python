@@ -1,0 +1,146 @@
+from PyQt5.QtWidgets import QApplication, QWidget, QPushButton, QVBoxLayout, QFileDialog, QLineEdit, QMessageBox
+from PyQt5.QtGui import QFont
+import os
+import cv2
+import pytesseract
+import numpy as np
+import pandas as pd
+import shutil
+import re
+import sys
+
+def actual_processing(filename, images_directory, df):
+    if filename.lower().endswith((".jpg", ".png")):
+        image_path = os.path.join(images_directory, filename)
+
+        # Load the image
+        img = cv2.imread(image_path)
+        if img is None:
+            print(f"Failed to load image: {image_path}")
+            return
+
+        # New crop coordinates for black-marked GR No. area
+        h, w = img.shape[:2]
+        crop = img[int(h*0.15):int(h*0.3), int(w*0.65):int(w*0.95)]  # Focus on marked area
+
+        # Convert to grayscale for black text detection
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        
+        # Adaptive thresholding for better text extraction
+        thresh = cv2.adaptiveThreshold(gray, 255, 
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
+
+        # Remove small noise
+        kernel = np.ones((2,2), np.uint8)
+        processed = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+
+        # OCR configuration for marked numbers
+        custom_config = r'--psm 6 --oem 3 -c tessedit_char_whitelist=0123456789'
+        text = pytesseract.image_to_string(processed, config=custom_config)
+        
+        # Enhanced regex for marked GR numbers
+        gr_match = re.search(r'\b(\d{5,7})\b', text)  # Match 5-7 digit numbers
+        if not gr_match:
+            QMessageBox.warning(None, "Warning", 
+                f"No GR No. found in {filename}\nRaw OCR: {text}")
+            return
+
+        grn = gr_match.group(1)
+        print(f"Detected GRN: {grn} in {filename}")
+
+        # Excel processing
+        try:
+            order_nos = df.loc[df['GRN'] == int(grn), 'OrderNo']
+            if not order_nos.empty:
+                base, ext = os.path.splitext(image_path)
+                for i, order_no in enumerate(order_nos):
+                    new_path = os.path.join(images_directory, f"{order_no}{ext}")
+                    if i == 0:
+                        os.rename(image_path, new_path)
+                    else:
+                        shutil.copy(new_path, new_path.replace(ext, f"_{i}{ext}"))
+        except Exception as e:
+            QMessageBox.critical(None, "Error", f"Processing error: {str(e)}")
+
+# Rest of the GUI code remains the same as previous version
+
+def rename_images_with_order_no(images_directory, excel_path):
+    # Load the Excel file and clean GRN values
+    try:
+        df = pd.read_excel(excel_path)
+        df['GRN'] = df['GRN'].astype(str).str.extract(r'(\d+)').astype(int)
+    except Exception as e:
+        QMessageBox.critical(None, "Error", f"Failed to load Excel file: {e}")
+        return
+
+    # Process each image in the directory
+    for filename in os.listdir(images_directory):
+        if filename.lower().endswith((".jpg", ".png")):
+            actual_processing(filename, images_directory, df)
+
+    QMessageBox.information(None, "Done", "Image renaming completed!")
+
+def browse_directory():
+    dialog = QFileDialog()
+    directory = dialog.getExistingDirectory(None, "Select Folder")
+    if directory:
+        directory_path.setText(directory)
+
+def browse_file():
+    dialog = QFileDialog()
+    file, _ = dialog.getOpenFileName(None, "Select File", "", "Excel Files (*.xlsx *.xls)")
+    if file:
+        file_path.setText(file)
+
+def rename_images():
+    images_directory = directory_path.text()
+    excel_path = file_path.text()
+
+    if not images_directory or not excel_path:
+        QMessageBox.warning(None, "Warning", "Please select both the image directory and Excel file.")
+        return
+
+    rename_images_with_order_no(images_directory, excel_path)
+
+# GUI setup
+app = QApplication(sys.argv)
+
+window = QWidget()
+window.setWindowTitle('GR No. Extractor')
+window.setStyleSheet("background-color: #F5F5F5;")
+
+layout = QVBoxLayout()
+
+font = QFont()
+font.setPointSize(10)
+
+browse_images_button = QPushButton('Browse Picture Folder')
+browse_images_button.setFont(font)
+browse_images_button.setStyleSheet("background-color: #ADD8E6;")
+browse_images_button.clicked.connect(browse_directory)
+layout.addWidget(browse_images_button)
+
+directory_path = QLineEdit()
+directory_path.setFont(font)
+layout.addWidget(directory_path)
+
+browse_excel_button = QPushButton('Browse Excel File')
+browse_excel_button.setFont(font)
+browse_excel_button.setStyleSheet("background-color: #ADD8E6;")
+browse_excel_button.clicked.connect(browse_file)
+layout.addWidget(browse_excel_button)
+
+file_path = QLineEdit()
+file_path.setFont(font)
+layout.addWidget(file_path)
+
+run_button = QPushButton('Run')
+run_button.setFont(font)
+run_button.setStyleSheet("background-color: #90EE90;")
+run_button.clicked.connect(rename_images)
+layout.addWidget(run_button)
+
+window.setLayout(layout)
+window.show()
+
+sys.exit(app.exec_())
